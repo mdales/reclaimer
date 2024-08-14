@@ -4,10 +4,26 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path"
 	"syscall"
 )
+
+func HTTPGet(url string, headers map[string]string) (*http.Response, error) {
+	client := &http.Client{}
+
+	req, err := http.NewRequest("GET", url, nil)
+	if nil != err {
+		return nil, err
+	}
+
+	req.Header.Set("User-Agent", "Reclaimer/0.1")
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+	return client.Do(req)
+}
 
 func MoveFileByPath(sourcePath string, destinationPath string) error {
 

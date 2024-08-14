@@ -6,6 +6,7 @@ import (
 	"os"
 	"path"
 
+	"quantify.earth/reclaimer/clms"
 	"quantify.earth/reclaimer/zenodo"
 )
 
@@ -13,6 +14,7 @@ type subcommand func([]string)
 
 var subcommands = map[string]subcommand{
 	"zenodo": zenodo.ZenodoMain,
+	"clms":   clms.CLMSMain,
 }
 
 func main() {

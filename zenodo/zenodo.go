@@ -60,7 +60,7 @@ type ZenodoRecord struct {
 
 func FetchRecord(zenodoID string) (ZenodoRecord, error) {
 	url := fmt.Sprintf("https://zenodo.org/api/records/%s", zenodoID)
-	resp, err := http.Get(url)
+	resp, err := utils.HTTPGet(url, nil)
 	if nil != err {
 		return ZenodoRecord{}, err
 	}
@@ -117,7 +117,7 @@ func FetchData(zenodoID string, filename string, extract bool, output string) er
 		return fmt.Errorf("failed to create temp download file: %w", err)
 	}
 
-	resp, err := http.Get(downloadURL)
+	resp, err := utils.HTTPGet(downloadURL, nil)
 	if nil != err {
 		out.Close()
 		return fmt.Errorf("download failed: %w", err)
