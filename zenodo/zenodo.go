@@ -1,16 +1,18 @@
 package zenodo
 
 import (
+	"archive/zip"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path"
-	"syscall"
+	"strings"
 	"time"
+
+	"quantify.earth/reclaimer/internal/utils"
 )
 
 type ZenodoCreator struct {
@@ -19,12 +21,14 @@ type ZenodoCreator struct {
 }
 
 type ZenodoRecordMetadata struct {
-	Title           string          `json:"title"`
-	DOI             string          `json:"doi"`
-	PublicationData string          `json:"publication_date"`
-	Description     string          `json:"description"`
-	AccessRight     string          `json:"access_right"`
-	Creators        []ZenodoCreator `json:"creators"`
+	Title           string            `json:"title"`
+	DOI             string            `json:"doi"`
+	PublicationData string            `json:"publication_date"`
+	Description     string            `json:"description"`
+	AccessRight     string            `json:"access_right"`
+	Creators        []ZenodoCreator   `json:"creators"`
+	License         map[string]string `json:"license"`
+	Notes           string            `json:"notes"`
 }
 
 type ZenodoFile struct {
@@ -54,7 +58,7 @@ type ZenodoRecord struct {
 	Submitted  bool                 `json:"submitted"`
 }
 
-func fetchRecord(zenodoID string) (ZenodoRecord, error) {
+func FetchRecord(zenodoID string) (ZenodoRecord, error) {
 	url := fmt.Sprintf("https://zenodo.org/api/records/%s", zenodoID)
 	resp, err := http.Get(url)
 	if nil != err {
@@ -71,9 +75,9 @@ func fetchRecord(zenodoID string) (ZenodoRecord, error) {
 	return record, err
 }
 
-func Fetch(zenodoID string, filename string, extract bool, output string) error {
+func FetchData(zenodoID string, filename string, extract bool, output string) error {
 
-	record, err := fetchRecord(zenodoID)
+	record, err := FetchRecord(zenodoID)
 	if nil != err {
 		return fmt.Errorf("failed to look up zenodo record: %w", err)
 	}
@@ -101,25 +105,15 @@ func Fetch(zenodoID string, filename string, extract bool, output string) error 
 		return fmt.Errorf("download has no name")
 	}
 
-	destinationPath := output
-	if "" == destinationPath {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return fmt.Errorf("failed to find current dir: %w", err)
-		}
-		destinationPath = path.Join(cwd, targetFilename)
-	}
-
 	tmpdir, err := os.MkdirTemp("", "zenodo-*")
 	if nil != err {
 		return fmt.Errorf("failed to make temp dir: %w", err)
 	}
 	defer os.RemoveAll(tmpdir)
 
-	outPath := path.Join(tmpdir, targetFilename)
-	out, err := os.Create(outPath)
+	tempDownloadPath := path.Join(tmpdir, targetFilename)
+	out, err := os.Create(tempDownloadPath)
 	if nil != err {
-		out.Close()
 		return fmt.Errorf("failed to create temp download file: %w", err)
 	}
 
@@ -131,38 +125,116 @@ func Fetch(zenodoID string, filename string, extract bool, output string) error 
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		out.Close()
 		return fmt.Errorf("unexpected HTTP status %d: %s", resp.StatusCode, resp.Status)
 	}
 
 	_, err = io.Copy(out, resp.Body)
+	out.Close()
 	if nil != err {
-		out.Close()
 		return fmt.Errorf("failed to download file: %w", err)
 	}
-	out.Close()
 
-	err = os.Rename(outPath, destinationPath)
-	if nil != err {
-		if errors.Is(err, syscall.EXDEV) {
-			out, err := os.Open(outPath)
-			if nil != err {
-				return fmt.Errorf("failed to open source when copying to destination: %w", err)
-			}
-			defer out.Close()
+	ext := path.Ext(targetFilename)
 
-			final, err := os.Create(destinationPath)
-			if nil != err {
-				return fmt.Errorf("failed to open destination for final copy: %w", err)
-			}
-			defer final.Close()
+	if extract && (".zip" == ext) {
 
-			_, err = io.Copy(final, out)
-			if nil != err {
-				return fmt.Errorf("error copying result to final place: %w", err)
+		zipReader, err := zip.OpenReader(tempDownloadPath)
+		if nil != err {
+			return fmt.Errorf("failed to open zip file: %w", err)
+		}
+		defer zipReader.Close()
+
+		generatedFiles := []string{}
+		for _, innerFile := range zipReader.File {
+			rawDest := path.Join(tmpdir, innerFile.Name)
+			dest := path.Clean(rawDest)
+			if !strings.HasPrefix(dest, tmpdir) {
+				return fmt.Errorf("uncompressing file escapes temp dir: %s", innerFile.Name)
 			}
-			// in a normal move file you'd delete the source here, but we don't need to
-			// as the tmp dir will be deleted
+
+			if innerFile.FileInfo().IsDir() {
+				err = os.MkdirAll(dest, os.ModePerm)
+				if nil != err {
+					return fmt.Errorf("failed to create explicit dir from zip %s: %w", innerFile.Name, err)
+				}
+			} else {
+				dir := path.Dir(dest)
+				err = os.MkdirAll(dir, os.ModePerm)
+				if nil != err {
+					return fmt.Errorf("failed to create implicit dir from zip %s: %w", innerFile.Name, err)
+				}
+
+				out, err := os.Create(dest)
+				if nil != err {
+					return fmt.Errorf("failed to create file for extracted data %s: %w", dest, err)
+				}
+				defer out.Close()
+				compress, err := innerFile.Open()
+				if nil != err {
+					return fmt.Errorf("failed to open file for extracted data %s: %w", innerFile.Name, err)
+				}
+				defer compress.Close()
+
+				_, err = io.Copy(out, compress)
+				if nil != err {
+					return fmt.Errorf("failed to copy data %s: %w", innerFile.Name, err)
+				}
+
+				generatedFiles = append(generatedFiles, innerFile.Name)
+			}
+		}
+
+		// put everything in the final place
+		if (1 == len(generatedFiles)) && ("" != output) {
+			destinationPath, err := utils.MakeOutputPath(generatedFiles[0], output)
+			if nil != err {
+				return fmt.Errorf("failed to make output path: %w", err)
+			}
+
+			err = utils.MoveFileByPath(tempDownloadPath, destinationPath)
+			if nil != err {
+				return fmt.Errorf("failed to move result to %s: %w", destinationPath, err)
+			}
 		} else {
+
+			// Treat output as directory
+			if "" == output {
+				cwd, err := os.Getwd()
+				if nil != err {
+					return fmt.Errorf("failed to look up cwd: %w", err)
+				}
+				output = cwd
+			}
+
+			for _, generatedFileName := range generatedFiles {
+				sourcePath := path.Join(tmpdir, generatedFileName)
+				destinationPath := path.Join(output, generatedFileName)
+				destinationDirectory := path.Dir(destinationPath)
+				err = os.MkdirAll(destinationDirectory, os.ModePerm)
+				if nil != err {
+					return fmt.Errorf("failed to make output directory %s: %w", output, err)
+				}
+
+				err = utils.MoveFileByPath(sourcePath, destinationPath)
+				if nil != err {
+					return fmt.Errorf("failed to move result to %s: %w", destinationPath, err)
+				}
+			}
+		}
+
+	} else {
+		if extract {
+			fmt.Fprintf(os.Stderr, "warning: ignoring extract argument as extension '%s' doesn't match\n", ext)
+		}
+
+		destinationPath, err := utils.MakeOutputPath(targetFilename, output)
+		if nil != err {
+			return fmt.Errorf("failed to make output path: %w", err)
+		}
+
+		err = utils.MoveFileByPath(tempDownloadPath, destinationPath)
+		if nil != err {
 			return fmt.Errorf("failed to move result to %s: %w", destinationPath, err)
 		}
 	}
@@ -170,13 +242,23 @@ func Fetch(zenodoID string, filename string, extract bool, output string) error 
 	return nil
 }
 
-func Inspect(zenodoID string) error {
-	record, err := fetchRecord(zenodoID)
+func inspect(zenodoID string) error {
+	record, err := FetchRecord(zenodoID)
 	if nil != err {
 		return err
 	}
 
 	fmt.Printf("title: %s\n", record.Title)
+	fmt.Printf("creators:\n")
+	for _, creator := range record.Metadata.Creators {
+		fmt.Printf("\t%s, %s\n", creator.Name, creator.Affiliation)
+	}
+	if len(record.Metadata.License) > 0 {
+		fmt.Printf("license:\n")
+		for key, value := range record.Metadata.License {
+			fmt.Printf("\t%s: %s\n", key, value)
+		}
+	}
 	fmt.Printf("files:\n")
 	for _, file := range record.Files {
 		units := []string{"b", "Kb", "Mb", "Gb", "Tb"}
@@ -200,14 +282,13 @@ func ZenodoMain(args []string) {
 	flag := flag.NewFlagSet("zenodo", flag.ExitOnError)
 	var (
 		zenodoID = flag.String("zenodo_id", "", "Zenodo ID of resource")
-		inspect  = flag.Bool("inspect", false, "only list the files, don't download")
 		filename = flag.String("filename", "", "Specific item within resource to download. If ommitted download first item.")
 		extract  = flag.Bool("extract", false, "If item is compressed extract automatically")
-		output   = flag.String("output", "", "Path where file should be stored")
+		output   = flag.String("output", "", "Destination name (filename for single item, directory name if multiple)")
 	)
 	flag.Parse(args)
 
-	if (nil == zenodoID) || (nil == filename) || (nil == output) || (nil == extract) || (nil == inspect) {
+	if (nil == zenodoID) || (nil == filename) || (nil == extract) || (nil == output) {
 		// stop the static analyser being upset
 		panic("Flags didn't work")
 	}
@@ -220,10 +301,10 @@ func ZenodoMain(args []string) {
 	}
 
 	var err error
-	if *inspect {
-		err = Inspect(*zenodoID)
+	if "" == *filename {
+		err = inspect(*zenodoID)
 	} else {
-		err = Fetch(*zenodoID, *filename, *extract, *output)
+		err = FetchData(*zenodoID, *filename, *extract, *output)
 	}
 	if nil != err {
 		fmt.Fprintf(os.Stderr, "ERROR: %v", err)
