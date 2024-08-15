@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"strings"
 	"syscall"
 )
 
@@ -14,6 +15,21 @@ func HTTPGet(url string, headers map[string]string) (*http.Response, error) {
 	client := &http.Client{}
 
 	req, err := http.NewRequest("GET", url, nil)
+	if nil != err {
+		return nil, err
+	}
+
+	req.Header.Set("User-Agent", "Reclaimer/0.1")
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+	return client.Do(req)
+}
+
+func HTTPPost(url string, headers map[string]string, body string) (*http.Response, error) {
+	client := &http.Client{}
+
+	req, err := http.NewRequest("POST", url, strings.NewReader(body))
 	if nil != err {
 		return nil, err
 	}
