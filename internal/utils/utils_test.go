@@ -1,8 +1,15 @@
 package utils
 
+// On macOS, tempdir is in /var/folders/... but
+// if you ask os.Getwd() you will get /private/var/folders/...
+// as /var is a symlink to /private/var. As internally
+// this function being tested will check the current working
+// dir, we need to handle this discrepency throughout these tests.
+
 import (
 	"os"
 	"path"
+	"path/filepath"
 	"testing"
 )
 
@@ -13,11 +20,16 @@ func TestMakeOutputDirRelative(t *testing.T) {
 		panic(err)
 	}
 
+	expandedTempDir, err := filepath.EvalSymlinks(tempdir)
+	if nil != err {
+		panic(err)
+	}
+
 	name, err := MakeOutputPath("test.foo", "")
 	if nil != err {
 		t.Errorf("Expected no error, got %v", err)
 	}
-	expected := path.Join(tempdir, "test.foo")
+	expected := path.Join(expandedTempDir, "test.foo")
 	if expected != name {
 		t.Errorf("Expected %s, got %s", expected, name)
 	}
@@ -43,11 +55,16 @@ func TestMakeOutputDirSimple(t *testing.T) {
 		panic(err)
 	}
 
+	expandedTempDir, err := filepath.EvalSymlinks(tempdir)
+	if nil != err {
+		panic(err)
+	}
+
 	name, err := MakeOutputPath("test.foo", "blam.txt")
 	if nil != err {
 		t.Errorf("Expected no error, got %v", err)
 	}
-	expected := path.Join(tempdir, "blam.txt")
+	expected := path.Join(expandedTempDir, "blam.txt")
 	if expected != name {
 		t.Errorf("Expected %s, got %s", expected, name)
 	}
