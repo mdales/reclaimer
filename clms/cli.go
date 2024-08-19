@@ -183,7 +183,7 @@ type verb func([]string) error
 func searchVerb(args []string) error {
 	flag := flag.NewFlagSet("clms", flag.ExitOnError)
 	var (
-		prepackaged = flag.Bool("prepared", false, "Search prepackaged data")
+		prepackaged = flag.Bool("prepackaged", false, "Search prepackaged data")
 		UID         = flag.String("uid", "", "UID of resource.")
 	)
 	flag.Parse(args)
@@ -213,13 +213,13 @@ func searchVerb(args []string) error {
 func downloadVerb(args []string) error {
 	flag := flag.NewFlagSet("clms", flag.ExitOnError)
 	var (
-		prepackaged = flag.Bool("prepared", false, "Search prepackaged data")
+		prepackaged = flag.Bool("prepackaged", false, "Search prepackaged data")
 		UID         = flag.String("uid", "", "UID of resource.")
 		downloadID  = flag.String("download_id", "", "The ID of the actual item within the resource to fetch.")
 		apiKeyPath  = flag.String("apikeyfile", "", "Path of JSON API key downloaded from CLMS account page.")
 		extract     = flag.Bool("extract", false, "If item is compressed extract automatically")
 		output      = flag.String("output", "", "Destination name (filename for single item, directory name if multiple).")
-		format      = flag.String("format", "GeoTIFF", "Requested download format. Defaults to GeoTIFF.")
+		format      = flag.String("format", "Geotiff", "Requested download format. Defaults to GeoTIFF.")
 		coordSystem = flag.String("cgs", "EPSG:4326", "Global coordinate System to use. Defaults to EPSG:4326.")
 	)
 	flag.Parse(args)
@@ -242,7 +242,7 @@ func downloadVerb(args []string) error {
 	}
 
 	if *prepackaged {
-		if ("" != *format) || ("" != *coordSystem) {
+		if ("Geotiff" != *format) || ("EPSG:4326" != *coordSystem) {
 			return fmt.Errorf("Can not specify format or coordinate system for prepackaged CLMS data.")
 		}
 		err = fetchPrepackagedData(*UID, *downloadID, *extract, sessionToken, *output)
