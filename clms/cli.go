@@ -178,6 +178,44 @@ func fetchPrepackagedData(
 	return completeDownload(sessionToken, taskID, extract, outputPath)
 }
 
+func directDownload(
+	uid string,
+	downloadID string,
+	extract bool,
+	sessionToken string,
+	outputPath string,
+) error {
+
+	directLinks, err := RequestDirectData(uid, downloadID, sessionToken, outputPath)
+	if nil != err {
+		return err
+	}
+	fmt.Printf("Received %d URLs.\n", len(directLinks))
+
+	// we have to assume outputPath is a directory in this case, so make it so
+	if "" != outputPath {
+		err = os.MkdirAll(outputPath, os.ModePerm)
+		if nil != err {
+			return fmt.Errorf("failed to create output dir: %w", err)
+		}
+	}
+
+	for _, urlstr := range directLinks {
+		fmt.Printf("Downloading %s...\n", urlstr)
+		url, err := url.Parse(urlstr)
+		if nil != err {
+			return fmt.Errorf("failed to parse url: %w", err)
+		}
+		err = utils.DownloadFile(urlstr, path.Base(url.Path), extract, outputPath)
+		if nil != err {
+			return fmt.Errorf("failed to download: %w", err)
+		}
+	}
+	return nil
+}
+
+//----- VERBS
+
 type verb func([]string) error
 
 func searchVerb(args []string) error {
@@ -332,6 +370,41 @@ func resumeVerb(args []string) error {
 	return completeDownload(sessionToken, *requestID, *extract, *output)
 }
 
+func directVerb(args []string) error {
+	flag := flag.NewFlagSet("clms", flag.ExitOnError)
+	var (
+		apiKeyPath = flag.String("apikeyfile", "", "Path of JSON API key downloaded from CLMS account page.")
+		UID        = flag.String("uid", "", "UID of resource.")
+		downloadID = flag.String("download_id", "", "The ID of the actual item within the resource to fetch.")
+		extract    = flag.Bool("extract", false, "If item is compressed extract automatically")
+		output     = flag.String("output", "", "Destination name (filename for single item, directory name if multiple).")
+	)
+	flag.Parse(args)
+
+	if (nil == apiKeyPath) || (nil == UID) || (nil == extract) || (nil == output) || (nil == downloadID) {
+		// stop the static analyser being upset
+		panic("Flags didn't work")
+	}
+
+	if "" == *UID {
+		return fmt.Errorf("Datset ID required")
+	}
+
+	if "" == *apiKeyPath {
+		return fmt.Errorf("No API key provided, required for downloads.")
+	}
+	apiKey, err := LoadAPIKey(*apiKeyPath)
+	if nil != err {
+		return fmt.Errorf("failed to load api key: %w", err)
+	}
+	sessionToken, err := apiKey.GetSessionToken()
+	if nil != err {
+		return fmt.Errorf("failed to get session token: %w", err)
+	}
+
+	return directDownload(*UID, *downloadID, *extract, sessionToken, *output)
+}
+
 func CLMSMain(args []string) {
 
 	var subcommands = map[string]verb{
@@ -339,6 +412,7 @@ func CLMSMain(args []string) {
 		"download": downloadVerb,
 		"requests": requestsVerb,
 		"resume":   resumeVerb,
+		"direct":   directVerb,
 	}
 
 	if len(args) == 0 {

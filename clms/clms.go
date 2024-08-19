@@ -306,6 +306,44 @@ func RequestPrepackagedData(
 	return requestData(sessionToken, outerRequest)
 }
 
+func RequestDirectData(
+	uid string,
+	downloadID string,
+	sessionToken string,
+	outputPath string,
+) ([]string, error) {
+
+	url := fmt.Sprintf("%s@get-download-file-urls?dataset_uid=%s&download_information_id=%s", baseURL, uid, downloadID)
+
+	auth := fmt.Sprintf("Bearer %s", sessionToken)
+	headers := map[string]string{
+		"Accept":        "application/json",
+		"Authorization": auth,
+	}
+	resp, err := utils.HTTPGet(url, headers)
+	if nil != err {
+		return nil, fmt.Errorf("failed request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if http.StatusOK != resp.StatusCode {
+		r, err := io.ReadAll(resp.Body)
+		body := resp.Status
+		if nil == err {
+			body = string(r)
+		}
+		return nil, fmt.Errorf("unexpected request response HTTP status %d: %s", resp.StatusCode, body)
+	}
+
+	var downloadURLs []string
+	err = json.NewDecoder(resp.Body).Decode(&downloadURLs)
+	if nil != err {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	return downloadURLs, nil
+}
+
 func GetTaskStatus(taskID string, sessionToken string) (CLMSTaskStatus, error) {
 	url := fmt.Sprintf("%s@datarequest_status_get?TaskID=%s", baseURL, taskID)
 	auth := fmt.Sprintf("Bearer %s", sessionToken)
