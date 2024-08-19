@@ -1,15 +1,12 @@
 package zenodo
 
 import (
-	"archive/zip"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path"
-	"strings"
 	"time"
 
 	"quantify.earth/reclaimer/internal/utils"
@@ -98,148 +95,8 @@ func FetchData(zenodoID string, filename string, extract bool, output string) er
 			break
 		}
 	}
-	if "" == downloadURL {
-		return fmt.Errorf("no download URL found")
-	}
-	if "" == targetFilename {
-		return fmt.Errorf("download has no name")
-	}
 
-	tmpdir, err := os.MkdirTemp("", "zenodo-*")
-	if nil != err {
-		return fmt.Errorf("failed to make temp dir: %w", err)
-	}
-	defer os.RemoveAll(tmpdir)
-
-	tempDownloadPath := path.Join(tmpdir, targetFilename)
-	out, err := os.Create(tempDownloadPath)
-	if nil != err {
-		return fmt.Errorf("failed to create temp download file: %w", err)
-	}
-
-	resp, err := utils.HTTPGet(downloadURL, nil)
-	if nil != err {
-		out.Close()
-		return fmt.Errorf("download failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		out.Close()
-		return fmt.Errorf("unexpected HTTP status %d: %s", resp.StatusCode, resp.Status)
-	}
-
-	_, err = io.Copy(out, resp.Body)
-	out.Close()
-	if nil != err {
-		return fmt.Errorf("failed to download file: %w", err)
-	}
-
-	ext := path.Ext(targetFilename)
-
-	if extract && (".zip" == ext) {
-
-		zipReader, err := zip.OpenReader(tempDownloadPath)
-		if nil != err {
-			return fmt.Errorf("failed to open zip file: %w", err)
-		}
-		defer zipReader.Close()
-
-		generatedFiles := []string{}
-		for _, innerFile := range zipReader.File {
-			rawDest := path.Join(tmpdir, innerFile.Name)
-			dest := path.Clean(rawDest)
-			if !strings.HasPrefix(dest, tmpdir) {
-				return fmt.Errorf("uncompressing file escapes temp dir: %s", innerFile.Name)
-			}
-
-			if innerFile.FileInfo().IsDir() {
-				err = os.MkdirAll(dest, os.ModePerm)
-				if nil != err {
-					return fmt.Errorf("failed to create explicit dir from zip %s: %w", innerFile.Name, err)
-				}
-			} else {
-				dir := path.Dir(dest)
-				err = os.MkdirAll(dir, os.ModePerm)
-				if nil != err {
-					return fmt.Errorf("failed to create implicit dir from zip %s: %w", innerFile.Name, err)
-				}
-
-				out, err := os.Create(dest)
-				if nil != err {
-					return fmt.Errorf("failed to create file for extracted data %s: %w", dest, err)
-				}
-				defer out.Close()
-				compress, err := innerFile.Open()
-				if nil != err {
-					return fmt.Errorf("failed to open file for extracted data %s: %w", innerFile.Name, err)
-				}
-				defer compress.Close()
-
-				_, err = io.Copy(out, compress)
-				if nil != err {
-					return fmt.Errorf("failed to copy data %s: %w", innerFile.Name, err)
-				}
-
-				generatedFiles = append(generatedFiles, innerFile.Name)
-			}
-		}
-
-		// put everything in the final place
-		if (1 == len(generatedFiles)) && ("" != output) {
-			destinationPath, err := utils.MakeOutputPath(generatedFiles[0], output)
-			if nil != err {
-				return fmt.Errorf("failed to make output path: %w", err)
-			}
-
-			err = utils.MoveFileByPath(tempDownloadPath, destinationPath)
-			if nil != err {
-				return fmt.Errorf("failed to move result to %s: %w", destinationPath, err)
-			}
-		} else {
-
-			// Treat output as directory
-			if "" == output {
-				cwd, err := os.Getwd()
-				if nil != err {
-					return fmt.Errorf("failed to look up cwd: %w", err)
-				}
-				output = cwd
-			}
-
-			for _, generatedFileName := range generatedFiles {
-				sourcePath := path.Join(tmpdir, generatedFileName)
-				destinationPath := path.Join(output, generatedFileName)
-				destinationDirectory := path.Dir(destinationPath)
-				err = os.MkdirAll(destinationDirectory, os.ModePerm)
-				if nil != err {
-					return fmt.Errorf("failed to make output directory %s: %w", output, err)
-				}
-
-				err = utils.MoveFileByPath(sourcePath, destinationPath)
-				if nil != err {
-					return fmt.Errorf("failed to move result to %s: %w", destinationPath, err)
-				}
-			}
-		}
-
-	} else {
-		if extract {
-			fmt.Fprintf(os.Stderr, "warning: ignoring extract argument as extension '%s' doesn't match\n", ext)
-		}
-
-		destinationPath, err := utils.MakeOutputPath(targetFilename, output)
-		if nil != err {
-			return fmt.Errorf("failed to make output path: %w", err)
-		}
-
-		err = utils.MoveFileByPath(tempDownloadPath, destinationPath)
-		if nil != err {
-			return fmt.Errorf("failed to move result to %s: %w", destinationPath, err)
-		}
-	}
-
-	return nil
+	return utils.DownloadFile(downloadURL, targetFilename, extract, output)
 }
 
 func inspect(zenodoID string) error {

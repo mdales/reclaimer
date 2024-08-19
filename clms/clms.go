@@ -2,11 +2,9 @@ package clms
 
 import (
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 
 	"quantify.earth/reclaimer/internal/utils"
 )
@@ -29,7 +27,7 @@ type CLMSDownloadInfo struct {
 	Layers     []string `json:"layers"`
 }
 
-type CLMSSearchItem struct {
+type CLMSDataset struct {
 	ID          string                        `json:"@id"`
 	Type        string                        `json:"@type"`
 	UID         string                        `json:"UID"`
@@ -40,124 +38,336 @@ type CLMSSearchItem struct {
 }
 
 type CLMSSearch struct {
-	ID    string           `json:"@id"`
-	Batch CLMSSearchBatch  `json:"batching"`
-	Items []CLMSSearchItem `json:"items"`
-	Total int              `json:"items_total"`
+	ID    string          `json:"@id"`
+	Batch CLMSSearchBatch `json:"batching"`
+	Items []CLMSDataset   `json:"items"`
+	Total int             `json:"items_total"`
 }
+
+type CLMSFileInfo struct {
+	ID         string `json:"@id"`
+	Area       string `json:"area"`
+	File       string `json:"file"`
+	Format     string `json:"format"`
+	Path       string `json:"path"`
+	Resolution string `json:"resolution"`
+	Size       string `json:"size"`
+	Source     string `json:"source"`
+	Title      string `json:"title"`
+	Type       string `json:"type"`
+	Version    string `json:"version"`
+	Year       string `json:"year"`
+}
+
+type CLMSFileList struct {
+	Items []CLMSFileInfo `json:"items"`
+	// Currently ignoring the schema
+}
+
+type CLMSPrepackagedDataset struct {
+	ID          string       `json:"@id"`
+	Type        string       `json:"@type"`
+	UID         string       `json:"UID"`
+	Title       string       `json:"title"`
+	Description string       `json:"description"`
+	Files       CLMSFileList `json:"downloadable_files"`
+	ReviewState string       `json:"review_state"`
+}
+
+type CLMSSearchPrepared struct {
+	ID    string                   `json:"@id"`
+	Batch CLMSSearchBatch          `json:"batching"`
+	Items []CLMSPrepackagedDataset `json:"items"`
+	Total int                      `json:"items_total"`
+}
+
+type CLMSDatumRequest struct {
+	DatasetID                    string `json:"DatasetID"`
+	DatasetDownloadInformationID string `json:"DatasetDownloadInformationID"`
+	OutputFormat                 string `json:"OutputFormat"`
+	OutputGCS                    string `json:"OutputGCS"`
+}
+
+type CLMSDataRequest struct {
+	Datasets []CLMSDatumRequest `json:"Datasets"`
+}
+
+type CLMSPreparedDatumRequest struct {
+	DatasetID string `json:"DatasetID"`
+	FileID    string `json:"FileID"`
+}
+
+type CLMSPrepackagedDataRequest struct {
+	Datasets []CLMSPreparedDatumRequest `json:"Datasets"`
+}
+
+type CLMSTask struct {
+	ID string `json:"TaskID"`
+}
+
+type CLMSTaskResponse struct {
+	TaskIDs      []CLMSTask `json:"TaskIds"`
+	ErrorTaskIDs []CLMSTask `json:"ErrorTaskIds"`
+}
+
+type CLMSTaskDataset struct {
+	DatasetFormat string   `json:"DatasetFormat"`
+	DatasetID     string   `json:"DatasetID"`
+	DatasetPath   string   `json:"DatasetPath"`
+	DatasetSource string   `json:"DatasetSource"`
+	DatasetTitle  string   `json:"DatasetTitle"`
+	Metadata      []string `json:"Metadata"`
+	NUTSID        string   `json:"NUTSID"`
+	NUTSName      string   `json:"NUTSName"`
+	OutputFormat  string   `json:"OutputFormat"`
+	OutputGCS     string   `json:"OutputGCS"`
+	WekeoChoices  string   `json:"WekeoChoices"`
+}
+
+type CLMSTaskStatus struct {
+	DownloadURL string            `json:"DownloadURL"`
+	FileSize    int64             `json:"FileSize"`
+	UserID      string            `json:"UserID"`
+	Status      string            `json:"Status"`
+	Message     string            `json:"Message"`
+	Datasets    []CLMSTaskDataset `json:"Datasets"`
+}
+
+const TaskInProgress = "In_progress"
+const TaskFinished = "Finished_ok"
 
 const baseURL = "https://land.copernicus.eu/api/"
 const searchPathTemplate = "%s@search?b_start=%d&portal_type=DataSet&metadata_fields=UID&metadata_fields=dataset_full_format&&metadata_fields=dataset_download_information"
+const preparedSearchPathTemplate = "%s@search?b_start=%d&portal_type=DataSet&metadata_fields=UID&metadata_fields=downloadable_files"
 
-func FetchIndex() ([]CLMSSearchItem, error) {
+func fetchIndexBatch(url string, batch interface{}) error {
 
-	items := make([]CLMSSearchItem, 0)
+	headers := map[string]string{
+		"Accept": "application/json",
+	}
+	resp, err := utils.HTTPGet(url, headers)
+	if nil != err {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		r, err := io.ReadAll(resp.Body)
+		body := resp.Status
+		if nil == err {
+			body = string(r)
+		}
+		return fmt.Errorf("unexpected HTTP status %d: %s", resp.StatusCode, body)
+	}
+
+	err = json.NewDecoder(resp.Body).Decode(&batch)
+	if nil != err {
+		return fmt.Errorf("failed to decode response for %s: %w", url, err)
+	}
+	return nil
+}
+
+func FetchIndexGeneratedData() ([]CLMSDataset, error) {
+	items := make([]CLMSDataset, 0)
 
 	url := fmt.Sprintf(searchPathTemplate, baseURL, 0)
 	for {
-		headers := map[string]string{
-			"Accept": "application/json",
-		}
-		resp, err := utils.HTTPGet(url, headers)
+		var batch CLMSSearch
+		err := fetchIndexBatch(url, &batch)
 		if nil != err {
 			return nil, err
 		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			r, err := io.ReadAll(resp.Body)
-			body := resp.Status
-			if nil == err {
-				body = string(r)
-			}
-			return nil, fmt.Errorf("unexpected HTTP status %d: %s", resp.StatusCode, body)
-		}
-
-		var res CLMSSearch
-		err = json.NewDecoder(resp.Body).Decode(&res)
-		if nil != err {
-			return nil, fmt.Errorf("failed to decode response for %s: %w", url, err)
-		}
-
-		// Technically not needed
-		if len(res.Items) == 0 {
+		if len(batch.Items) == 0 {
 			break
 		}
 
-		items = append(items, res.Items...)
-
-		if res.Batch.Last == url {
+		items = append(items, batch.Items...)
+		if batch.Batch.Last == url {
 			break
 		}
-		if res.Batch.Next == url {
+		if batch.Batch.Next == url {
 			break
 		}
-		url = res.Batch.Next
+		url = batch.Batch.Next
 		if "" == url {
 			return nil, fmt.Errorf("got invald response: no next URL")
 		}
 	}
-
 	return items, nil
 }
 
-func inspectAll() error {
-	index, err := FetchIndex()
-	if nil != err {
-		return err
-	}
+func FetchIndexPrepackagedData() ([]CLMSPrepackagedDataset, error) {
+	items := make([]CLMSPrepackagedDataset, 0)
 
-	for _, item := range index {
-		fmt.Printf("%s: %s\n", item.UID, item.Title)
-	}
-
-	return nil
-}
-
-func inspect(UID string) error {
-	index, err := FetchIndex()
-	if nil != err {
-		return err
-	}
-
-	for _, item := range index {
-		if item.UID == UID {
-			fmt.Printf("title: %s\n", item.Title)
-			fmt.Printf("description: %s\n", item.Description)
-
-			if items, ok := item.Downloads["items"]; ok {
-				for _, item := range items {
-					fmt.Printf("\t%s: %s\n", item.Name, item.FullPath)
-				}
-			}
-
+	url := fmt.Sprintf(preparedSearchPathTemplate, baseURL, 0)
+	for {
+		var batch CLMSSearchPrepared
+		err := fetchIndexBatch(url, &batch)
+		if nil != err {
+			return nil, err
+		}
+		if len(batch.Items) == 0 {
 			break
 		}
-	}
 
-	return nil
+		items = append(items, batch.Items...)
+		if batch.Batch.Last == url {
+			break
+		}
+		if batch.Batch.Next == url {
+			break
+		}
+		url = batch.Batch.Next
+		if "" == url {
+			return nil, fmt.Errorf("got invald response: no next URL")
+		}
+	}
+	return items, nil
 }
 
-func CLMSMain(args []string) {
-	flag := flag.NewFlagSet("clms", flag.ExitOnError)
-	var (
-		UID = flag.String("uid", "", "UID of resource")
-	)
-	flag.Parse(args)
+func requestData(sessionToken string, payload interface{}) (CLMSTaskResponse, error) {
 
-	if nil == UID {
-		// stop the static analyser being upset
-		panic("Flags didn't work")
-	}
-
-	var err error
-	if "" == *UID {
-		err = inspectAll()
-	} else {
-		err = inspect(*UID)
-	}
+	jsonStrBytes, err := json.Marshal(payload)
 	if nil != err {
-		fmt.Fprintf(os.Stderr, "ERROR: %v", err)
-		os.Exit(1)
+		return CLMSTaskResponse{}, fmt.Errorf("failed to marshal request: %w", err)
 	}
+	fmt.Printf("request bytes: %s\n", string(jsonStrBytes))
+
+	url := fmt.Sprintf("%s@datarequest_post", baseURL)
+
+	auth := fmt.Sprintf("Bearer %s", sessionToken)
+	headers := map[string]string{
+		"Accept":        "application/json",
+		"Content-type":  "application/json",
+		"Authorization": auth,
+	}
+	resp, err := utils.HTTPPost(url, headers, string(jsonStrBytes))
+	if nil != err {
+		return CLMSTaskResponse{}, fmt.Errorf("failed request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if http.StatusCreated != resp.StatusCode {
+		r, err := io.ReadAll(resp.Body)
+		body := resp.Status
+		if nil == err {
+			body = string(r)
+		}
+		return CLMSTaskResponse{}, fmt.Errorf("unexpected request response HTTP status %d: %s", resp.StatusCode, body)
+	}
+
+	// hopefully we have a task ID now
+	var taskResp CLMSTaskResponse
+	err = json.NewDecoder(resp.Body).Decode(&taskResp)
+	if nil != err {
+		return CLMSTaskResponse{}, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	return taskResp, nil
+}
+
+func RequestGeneratedData(
+	uid string,
+	downloadID string,
+	outputFormat string,
+	coordinateSystem string,
+	sessionToken string,
+	outputPath string,
+) (CLMSTaskResponse, error) {
+	// Prep the request
+	request := CLMSDatumRequest{
+		DatasetID:                    uid,
+		DatasetDownloadInformationID: downloadID,
+		OutputFormat:                 outputFormat,
+		OutputGCS:                    coordinateSystem,
+	}
+	outerRequest := CLMSDataRequest{
+		Datasets: []CLMSDatumRequest{request},
+	}
+
+	return requestData(sessionToken, outerRequest)
+}
+
+func RequestPrepackagedData(
+	uid string,
+	downloadID string,
+	sessionToken string,
+	outputPath string,
+) (CLMSTaskResponse, error) {
+	// Prep the request
+	request := CLMSPreparedDatumRequest{
+		DatasetID: uid,
+		FileID:    downloadID,
+	}
+	outerRequest := CLMSPrepackagedDataRequest{
+		Datasets: []CLMSPreparedDatumRequest{request},
+	}
+
+	return requestData(sessionToken, outerRequest)
+}
+
+func GetTaskStatus(taskID string, sessionToken string) (CLMSTaskStatus, error) {
+	url := fmt.Sprintf("%s@datarequest_status_get?TaskID=%s", baseURL, taskID)
+	auth := fmt.Sprintf("Bearer %s", sessionToken)
+	headers := map[string]string{
+		"Accept":        "application/json",
+		"Content-type":  "application/json",
+		"Authorization": auth,
+	}
+	resp, err := utils.HTTPGet(url, headers)
+	if nil != err {
+		return CLMSTaskStatus{}, fmt.Errorf("failed request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if http.StatusOK != resp.StatusCode {
+		r, err := io.ReadAll(resp.Body)
+		body := resp.Status
+		if nil == err {
+			body = string(r)
+		}
+		return CLMSTaskStatus{}, fmt.Errorf("unexpected request HTTP status %d: %s", resp.StatusCode, body)
+	}
+
+	// hopefully we have a task ID now
+	var taskResp CLMSTaskStatus
+	err = json.NewDecoder(resp.Body).Decode(&taskResp)
+	if nil != err {
+		return CLMSTaskStatus{}, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	return taskResp, nil
+}
+
+func GetRequests(
+	sessionToken string,
+) (map[string]CLMSTaskStatus, error) {
+	url := fmt.Sprintf("%s@datarequest_search", baseURL)
+	auth := fmt.Sprintf("Bearer %s", sessionToken)
+	headers := map[string]string{
+		"Accept":        "application/json",
+		"Authorization": auth,
+	}
+	resp, err := utils.HTTPGet(url, headers)
+	if nil != err {
+		return nil, fmt.Errorf("failed request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if http.StatusOK != resp.StatusCode {
+		r, err := io.ReadAll(resp.Body)
+		body := resp.Status
+		if nil == err {
+			body = string(r)
+		}
+		return nil, fmt.Errorf("unexpected request HTTP status %d: %s", resp.StatusCode, body)
+	}
+
+	var taskResp map[string]CLMSTaskStatus
+	err = json.NewDecoder(resp.Body).Decode(&taskResp)
+	if nil != err {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	return taskResp, nil
 }
