@@ -119,7 +119,7 @@ func DownloadFile(downloadURL string, targetFilename string, extract bool, desti
 		return fmt.Errorf("download has no name")
 	}
 
-	tmpdir, err := os.MkdirTemp("", "zenodo-*")
+	tmpdir, err := os.MkdirTemp("", "reclaimer-*")
 	if nil != err {
 		return fmt.Errorf("failed to make temp dir: %w", err)
 	}
@@ -149,10 +149,7 @@ func DownloadFile(downloadURL string, targetFilename string, extract bool, desti
 		return fmt.Errorf("failed to download file: %w", err)
 	}
 
-	ext := path.Ext(targetFilename)
-
-	if extract && (".zip" == ext) {
-
+	if extract {
 		zipReader, err := zip.OpenReader(tempDownloadPath)
 		if nil != err {
 			return fmt.Errorf("failed to open zip file: %w", err)
@@ -206,7 +203,7 @@ func DownloadFile(downloadURL string, targetFilename string, extract bool, desti
 				return fmt.Errorf("failed to make output path: %w", err)
 			}
 
-			err = MoveFileByPath(tempDownloadPath, destinationPath)
+			err = MoveFileByPath(path.Join(tmpdir, generatedFiles[0]), destinationPath)
 			if nil != err {
 				return fmt.Errorf("failed to move result to %s: %w", destinationPath, err)
 			}
@@ -238,9 +235,6 @@ func DownloadFile(downloadURL string, targetFilename string, extract bool, desti
 		}
 
 	} else {
-		if extract {
-			fmt.Fprintf(os.Stderr, "warning: ignoring extract argument as extension '%s' doesn't match\n", ext)
-		}
 
 		finalDestinationPath, err := MakeOutputPath(targetFilename, destinationPath)
 		if nil != err {
