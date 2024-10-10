@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path"
@@ -37,22 +38,22 @@ type ZenodoFile struct {
 }
 
 type ZenodoRecord struct {
-	Created    time.Time            `json:"created"`
-	Modified   time.Time            `json:"modified"`
-	Updated    time.Time            `json:"updated"`
-	ID         int                  `json:"id"`
-	Revision   int                  `json:"revision"`
-	DOI        string               `json:"doi"`
-	DOIURL     string               `json:"doi_url"`
-	Metadata   ZenodoRecordMetadata `json:"metadata"`
-	Version    string               `json:"version"`
-	Title      string               `json:"title"`
-	Links      map[string]string    `json:"links"`
-	Files      []ZenodoFile         `json:"files"`
-	Status     string               `json:"status"`
-	Statistics map[string]int       `json:"stats"`
-	State      string               `json:"state"`
-	Submitted  bool                 `json:"submitted"`
+	Created    time.Time              `json:"created"`
+	Modified   time.Time              `json:"modified"`
+	Updated    time.Time              `json:"updated"`
+	ID         int                    `json:"id"`
+	Revision   int                    `json:"revision"`
+	DOI        string                 `json:"doi"`
+	DOIURL     string                 `json:"doi_url"`
+	Metadata   ZenodoRecordMetadata   `json:"metadata"`
+	Version    string                 `json:"version"`
+	Title      string                 `json:"title"`
+	Links      map[string]interface{} `json:"links"`
+	Files      []ZenodoFile           `json:"files"`
+	Status     string                 `json:"status"`
+	Statistics map[string]int         `json:"stats"`
+	State      string                 `json:"state"`
+	Submitted  bool                   `json:"submitted"`
 }
 
 func FetchRecord(zenodoID string) (ZenodoRecord, error) {
@@ -67,9 +68,17 @@ func FetchRecord(zenodoID string) (ZenodoRecord, error) {
 		return ZenodoRecord{}, fmt.Errorf("unexpected HTTP status %d: %s", resp.StatusCode, resp.Status)
 	}
 
+	raw, err := io.ReadAll(resp.Body)
+	if nil != err {
+		return ZenodoRecord{}, err
+	}
+
 	var record ZenodoRecord
-	err = json.NewDecoder(resp.Body).Decode(&record)
-	return record, err
+	err = json.Unmarshal(raw, &record)
+	if err != nil {
+		return ZenodoRecord{}, fmt.Errorf("failed to decode JSON: %w\n%s", err, string(raw))
+	}
+	return record, nil
 }
 
 func FetchData(zenodoID string, filename string, extract bool, output string) error {
